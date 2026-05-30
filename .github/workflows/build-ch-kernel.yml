@@ -1,0 +1,92 @@
+name: build-ch-kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: cloud-hypervisor/linux git ref / tag / branch
+        default: ch-release-v6.16.9-20260508
+        type: string
+
+jobs:
+  build:
+    runs-on: [self-hosted, vex, linux, x64]
+    timeout-minutes: 60
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      REF: ${{ inputs.ref }}
+
+    steps:
+      - name: host identity
+        run: |
+          uname -a
+          echo "cpu cores: $(nproc)"
+          grep -m1 'model name' /proc/cpuinfo
+          free -h
+          df -h /
+
+      - name: install build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+              build-essential bc bison flex libelf-dev libssl-dev \
+              libncurses-dev cpio kmod git ca-certificates
+          gcc --version | head -1
+          git --version
+
+      - name: clone cloud-hypervisor/linux @ $REF
+        run: |
+          git clone --depth 1 -b "$REF" \
+              https://github.com/cloud-hypervisor/linux ch-linux
+          cd ch-linux
+          echo "head: $(git rev-parse HEAD)"
+          echo "available x86 configs:"
+          ls arch/x86/configs/
+
+      - name: prepare kernel config
+        run: |
+          cd ch-linux
+          for cand in ch_defconfig microvm_defconfig defconfig; do
+              if [ -f "arch/x86/configs/$cand" ]; then
+                  echo "::group::using $cand"
+                  make "$cand"
+                  echo "::endgroup::"
+                  break
+              fi
+          done
+          # belt-and-suspenders: ensure the virtio bits vex needs are enabled
+          ./scripts/config \
+              -e CONFIG_VIRTIO -e CONFIG_VIRTIO_PCI \
+              -e CONFIG_VIRTIO_BLK -e CONFIG_VIRTIO_NET \
+              -e CONFIG_VIRTIO_FS -e CONFIG_FUSE_FS \
+              -e CONFIG_VIRTIO_CONSOLE -e CONFIG_VIRTIO_MMIO
+          make olddefconfig
+
+          echo "::group::final config summary"
+          for k in VIRTIO VIRTIO_FS FUSE_FS VIRTIO_PCI VIRTIO_BLK VIRTIO_NET; do
+              echo "CONFIG_$k=$(./scripts/config -s CONFIG_$k)"
+          done
+          echo "::endgroup::"
+
+      - name: build vmlinux
+        run: |
+          cd ch-linux
+          make -j"$(nproc)" vmlinux
+
+      - name: artifact info
+        run: |
+          cd ch-linux
+          ls -lh vmlinux System.map .config
+          file vmlinux
+          sha256sum vmlinux
+
+      - name: upload vmlinux + config
+        uses: actions/upload-artifact@v4
+        with:
+          name: vmlinux-${{ inputs.ref }}
+          path: |
+            ch-linux/vmlinux
+            ch-linux/System.map
+            ch-linux/.config
+          if-no-files-found: error
+          retention-days: 14
