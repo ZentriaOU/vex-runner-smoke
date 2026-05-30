@@ -39,7 +39,7 @@ jobs:
           cd ipxe
           echo "head: $(git rev-parse HEAD)"
 
-      - name: build (EFI + BIOS + lkrn targets)
+      - name: build vanilla (EFI + BIOS + lkrn targets)
         run: |
           cd ipxe/src
           # Targets:
@@ -54,12 +54,45 @@ jobs:
               bin/ipxe.lkrn \
               bin/undionly.kpxe \
               bin/ipxe.iso
+          mkdir -p ../../out/vanilla
+          cp bin-x86_64-efi/ipxe.efi      ../../out/vanilla/
+          cp bin-x86_64-efi/snponly.efi   ../../out/vanilla/
+          cp bin/ipxe.lkrn                ../../out/vanilla/
+          cp bin/undionly.kpxe            ../../out/vanilla/
+          cp bin/ipxe.iso                 ../../out/vanilla/
+
+      - name: build IMDS-bootstrap variant (EMBED=imds-boot.ipxe)
+        run: |
+          # Embedded script: DHCP for network, then chain-load whatever
+          # script the vex controller wrote to metadata_service.ipxe-script.
+          # Falls back to interactive shell on failure for debug.
+          cat > /tmp/imds-boot.ipxe <<'EOF'
+          #!ipxe
+          set imds-url http://169.254.169.254/latest/ipxe-script
+          dhcp || goto noip
+          echo Fetching boot script from ${imds-url}
+          chain --replace --autofree ${imds-url} || goto fail
+          :noip
+          echo No DHCP lease; dropping to shell.
+          shell
+          :fail
+          echo IMDS chain-load failed; dropping to shell.
+          shell
+          EOF
+          cd ipxe/src
+          make clean
+          make -j"$(nproc)" EMBED=/tmp/imds-boot.ipxe \
+              bin-x86_64-efi/ipxe.efi \
+              bin/ipxe.lkrn
+          mkdir -p ../../out/imds
+          cp bin-x86_64-efi/ipxe.efi  ../../out/imds/ipxe-imds.efi
+          cp bin/ipxe.lkrn            ../../out/imds/ipxe-imds.lkrn
+          cp /tmp/imds-boot.ipxe      ../../out/imds/embed.ipxe
 
       - name: artifact info
         run: |
-          cd ipxe/src
-          for f in bin-x86_64-efi/ipxe.efi bin-x86_64-efi/snponly.efi \
-                   bin/ipxe.lkrn bin/undionly.kpxe bin/ipxe.iso; do
+          cd out
+          for f in vanilla/* imds/*; do
               if [ -f "$f" ]; then
                   size=$(stat -c%s "$f")
                   sha=$(sha256sum "$f" | awk '{print $1}')
@@ -71,11 +104,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ipxe-${{ inputs.ref }}
-          path: |
-            ipxe/src/bin-x86_64-efi/ipxe.efi
-            ipxe/src/bin-x86_64-efi/snponly.efi
-            ipxe/src/bin/ipxe.lkrn
-            ipxe/src/bin/undionly.kpxe
-            ipxe/src/bin/ipxe.iso
+          path: out/**
           if-no-files-found: error
           retention-days: 14
