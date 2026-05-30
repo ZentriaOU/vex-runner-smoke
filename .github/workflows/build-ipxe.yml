@@ -1,0 +1,81 @@
+name: build-ipxe
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: ipxe/ipxe git ref / tag / branch / SHA
+        default: master
+        type: string
+
+jobs:
+  build:
+    runs-on: [self-hosted, vex, linux, x64]
+    timeout-minutes: 30
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      REF: ${{ inputs.ref }}
+
+    steps:
+      - name: host identity
+        run: |
+          uname -a
+          echo "cpu cores: $(nproc)"
+          free -h
+          df -h /
+
+      - name: install build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+              build-essential perl liblzma-dev mtools xorriso isolinux \
+              syslinux-common git ca-certificates
+          gcc --version | head -1
+          perl --version | head -2 | tail -1
+
+      - name: clone ipxe @ $REF
+        run: |
+          git clone --depth 1 -b "$REF" https://github.com/ipxe/ipxe ipxe
+          cd ipxe
+          echo "head: $(git rev-parse HEAD)"
+
+      - name: build (EFI + BIOS + lkrn targets)
+        run: |
+          cd ipxe/src
+          # Targets:
+          #   bin-x86_64-efi/ipxe.efi        — UEFI x64 (cloud-hypervisor UEFI boot)
+          #   bin-x86_64-efi/snponly.efi     — UEFI x64 chainload from existing PXE NIC
+          #   bin/ipxe.lkrn                  — Linux kernel format (vex direct-kernel boot)
+          #   bin/undionly.kpxe              — legacy PXE chainload
+          #   bin/ipxe.iso                   — bootable ISO
+          make -j"$(nproc)" \
+              bin-x86_64-efi/ipxe.efi \
+              bin-x86_64-efi/snponly.efi \
+              bin/ipxe.lkrn \
+              bin/undionly.kpxe \
+              bin/ipxe.iso
+
+      - name: artifact info
+        run: |
+          cd ipxe/src
+          for f in bin-x86_64-efi/ipxe.efi bin-x86_64-efi/snponly.efi \
+                   bin/ipxe.lkrn bin/undionly.kpxe bin/ipxe.iso; do
+              if [ -f "$f" ]; then
+                  size=$(stat -c%s "$f")
+                  sha=$(sha256sum "$f" | awk '{print $1}')
+                  printf "%-32s  %10d bytes  %s\n" "$f" "$size" "$sha"
+              fi
+          done
+
+      - name: upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipxe-${{ inputs.ref }}
+          path: |
+            ipxe/src/bin-x86_64-efi/ipxe.efi
+            ipxe/src/bin-x86_64-efi/snponly.efi
+            ipxe/src/bin/ipxe.lkrn
+            ipxe/src/bin/undionly.kpxe
+            ipxe/src/bin/ipxe.iso
+          if-no-files-found: error
+          retention-days: 14
