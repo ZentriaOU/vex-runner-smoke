@@ -1,0 +1,92 @@
+name: build-ovmf
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: tianocore/edk2 git ref / tag / SHA
+        default: master
+        type: string
+      build_target:
+        description: EDK2 build target (RELEASE or DEBUG)
+        default: RELEASE
+        type: choice
+        options: [RELEASE, DEBUG]
+
+jobs:
+  build:
+    runs-on: [self-hosted, vex, linux, x64]
+    timeout-minutes: 45
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      REF: ${{ inputs.ref }}
+      BUILD_TARGET: ${{ inputs.build_target }}
+
+    steps:
+      - name: host identity
+        run: |
+          uname -a
+          echo "cpu cores: $(nproc)"
+          free -h
+          df -h /
+
+      - name: install build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+              build-essential nasm acpica-tools uuid-dev python3 \
+              python-is-python3 git ca-certificates
+          gcc --version | head -1
+          nasm --version
+          iasl -v | head -2 | tail -1
+
+      - name: clone edk2 @ $REF
+        run: |
+          git clone --depth 1 -b "$REF" https://github.com/tianocore/edk2 edk2
+          cd edk2
+          # CloudHv target needs the submodules (BrotliCustomDecompressLib,
+          # openssl, etc. — fetched here even if some aren't used in CloudHv
+          # because BaseTools build still references them).
+          git submodule update --init --depth 1 --recursive
+          echo "head: $(git rev-parse HEAD)"
+
+      - name: build BaseTools
+        run: |
+          cd edk2
+          make -C BaseTools -j"$(nproc)"
+
+      - name: build OvmfPkg/CloudHv (X64, $BUILD_TARGET, GCC5)
+        run: |
+          cd edk2
+          export WORKSPACE="$(pwd)"
+          export PACKAGES_PATH="$WORKSPACE"
+          # shellcheck source=/dev/null
+          . ./edksetup.sh
+          build \
+              -p OvmfPkg/CloudHv/CloudHvX64.dsc \
+              -t GCC5 \
+              -a X64 \
+              -b "$BUILD_TARGET" \
+              -n "$(nproc)"
+
+          # Output path is Build/CloudHvX64/{TARGET}_GCC5/FV/CLOUDHV.fd
+          OUT="Build/CloudHvX64/${BUILD_TARGET}_GCC5/FV/CLOUDHV.fd"
+          ls -la "$OUT"
+          mkdir -p ../out
+          cp "$OUT" "../out/CLOUDHV.fd"
+          sha256sum ../out/CLOUDHV.fd
+
+      - name: artifact info
+        run: |
+          ls -la out/
+          file out/CLOUDHV.fd
+          stat -c "%n %s bytes" out/CLOUDHV.fd
+          sha256sum out/CLOUDHV.fd
+
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ovmf-cloudhv-${{ inputs.ref }}-${{ inputs.build_target }}
+          path: out/**
+          if-no-files-found: error
+          retention-days: 14
