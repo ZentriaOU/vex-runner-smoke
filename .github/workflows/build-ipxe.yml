@@ -89,6 +89,33 @@ jobs:
           cp bin/ipxe.lkrn            ../../out/imds/ipxe-imds.lkrn
           cp /tmp/imds-boot.ipxe      ../../out/imds/embed.ipxe
 
+      - name: build IMDS-bootstrap variant w/ SNP disabled (native virtio-net only)
+        run: |
+          # Patch: force snpnet_supported() to always return -ENOTTY so the
+          # UEFI SNP wrapper never binds. iPXE then falls through to its
+          # native virtio-net PCI driver, bypassing OVMF's flaky SNP shim.
+          cd ipxe/src
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path("drivers/net/efi/snpnet.c")
+          src = p.read_text()
+          # locate snpnet_supported() body and insert immediate return
+          marker = "int snpnet_supported ( EFI_HANDLE device, EFI_GUID *protocol,\n\t\t       int inhibit_wifi ) {\n\tEFI_HANDLE parent;\n\tint rc;\n"
+          if marker not in src:
+              raise SystemExit("could not find snpnet_supported marker; iPXE source may have changed")
+          patched = src.replace(marker, marker + "\n\t/* PATCH: force native driver path under OVMF (SNP receive is buggy with virtio-net) */\n\t( void ) device; ( void ) protocol; ( void ) inhibit_wifi; ( void ) parent; ( void ) rc;\n\treturn -ENOTTY;\n")
+          p.write_text(patched)
+          PY
+          # Verify patch landed
+          grep -A2 "PATCH: force native driver path" drivers/net/efi/snpnet.c
+
+          make clean
+          make -j"$(nproc)" EMBED=/tmp/imds-boot.ipxe \
+              bin-x86_64-efi/ipxe.efi
+          mkdir -p ../../out/imds-nosnp
+          cp bin-x86_64-efi/ipxe.efi    ../../out/imds-nosnp/ipxe-imds-nosnp.efi
+          cp drivers/net/efi/snpnet.c   ../../out/imds-nosnp/snpnet.c.patched
+
       - name: artifact info
         run: |
           cd out
