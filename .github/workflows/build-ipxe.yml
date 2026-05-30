@@ -42,12 +42,6 @@ jobs:
       - name: build vanilla (EFI + BIOS + lkrn targets)
         run: |
           cd ipxe/src
-          # Targets:
-          #   bin-x86_64-efi/ipxe.efi        — UEFI x64 (cloud-hypervisor UEFI boot)
-          #   bin-x86_64-efi/snponly.efi     — UEFI x64 chainload from existing PXE NIC
-          #   bin/ipxe.lkrn                  — Linux kernel format (vex direct-kernel boot)
-          #   bin/undionly.kpxe              — legacy PXE chainload
-          #   bin/ipxe.iso                   — bootable ISO
           make -j"$(nproc)" \
               bin-x86_64-efi/ipxe.efi \
               bin-x86_64-efi/snponly.efi \
@@ -61,24 +55,62 @@ jobs:
           cp bin/undionly.kpxe            ../../out/vanilla/
           cp bin/ipxe.iso                 ../../out/vanilla/
 
-      - name: build IMDS-bootstrap variant (EMBED=imds-boot.ipxe)
+      - name: write embedded boot script (link-wait + dhcp retry)
         run: |
-          # Embedded script: DHCP for network, then chain-load whatever
-          # script the vex controller wrote to metadata_service.ipxe-script.
-          # Falls back to interactive shell on failure for debug.
+          # Embedded script:
+          #   - explicit ifopen net0
+          #   - wait up to 15s for link up (${net0/link}==1)
+          #   - DHCP with up to 4 retries (sleep 2s between)
+          #   - on success, chain http://169.254.169.254/latest/ipxe-script
+          # Each failure path drops to interactive shell so we can poke at
+          # ifstat / route / dhcp manually from the serial console.
           cat > /tmp/imds-boot.ipxe <<'EOF'
           #!ipxe
           set imds-url http://169.254.169.254/latest/ipxe-script
-          dhcp || goto noip
-          echo Fetching boot script from ${imds-url}
+
+          echo Opening net0 and waiting for link...
+          ifopen net0 || goto noif
+
+          set wait:int8 0
+          :link_wait
+          iseq ${net0/link} 1 && goto link_up
+          sleep 1
+          inc wait
+          iseq ${wait} 15 && goto link_timeout
+          goto link_wait
+
+          :link_up
+          echo Link up after ${wait}s (mac ${net0/mac})
+          set try:int8 0
+          :dhcp_retry
+          echo DHCP attempt ${try}...
+          dhcp net0 && goto have_ip
+          sleep 2
+          inc try
+          iseq ${try} 4 && goto noip
+          goto dhcp_retry
+
+          :have_ip
+          echo Got IP ${net0/ip} via ${net0/dhcp-server}
           chain --replace --autofree ${imds-url} || goto fail
+
+          :noif
+          echo No net0 interface available
+          shell
+          :link_timeout
+          echo net0 link never came up after 15s
+          shell
           :noip
-          echo No DHCP lease; dropping to shell.
+          echo DHCP failed after retries
           shell
           :fail
-          echo IMDS chain-load failed; dropping to shell.
+          echo IMDS chain-load failed
           shell
           EOF
+          cat /tmp/imds-boot.ipxe
+
+      - name: build IMDS-bootstrap variant (EMBED=imds-boot.ipxe)
+        run: |
           cd ipxe/src
           make clean
           make -j"$(nproc)" EMBED=/tmp/imds-boot.ipxe \
@@ -89,41 +121,29 @@ jobs:
           cp bin/ipxe.lkrn            ../../out/imds/ipxe-imds.lkrn
           cp /tmp/imds-boot.ipxe      ../../out/imds/embed.ipxe
 
-      - name: build IMDS-bootstrap variant w/ SNP disabled (native virtio-net only)
+      - name: build IMDS-bootstrap variant w/ DHCP+netdev debug
         run: |
-          # Patch: force snpnet_supported() to always return -ENOTTY so the
-          # UEFI SNP wrapper never binds. iPXE then falls through to its
-          # native virtio-net PCI driver, bypassing OVMF's flaky SNP shim.
+          # Same embedded script, but compiled with DEBUG=dhcp,netdevice,arp.
+          # Produces extremely verbose serial output suitable for diagnosing
+          # *why* the initial DHCP attempt fails. Not for production use.
           cd ipxe/src
-          python3 <<'PY'
-          from pathlib import Path
-          p = Path("drivers/net/efi/snpnet.c")
-          src = p.read_text()
-          # locate snpnet_supported() body and insert immediate return
-          marker = "int snpnet_supported ( EFI_HANDLE device, EFI_GUID *protocol,\n\t\t       int inhibit_wifi ) {\n\tEFI_HANDLE parent;\n\tint rc;\n"
-          if marker not in src:
-              raise SystemExit("could not find snpnet_supported marker; iPXE source may have changed")
-          patched = src.replace(marker, marker + "\n\t/* PATCH: force native driver path under OVMF (SNP receive is buggy with virtio-net) */\n\t( void ) device; ( void ) protocol; ( void ) inhibit_wifi; ( void ) parent; ( void ) rc;\n\treturn -ENOTTY;\n")
-          p.write_text(patched)
-          PY
-          # Verify patch landed
-          grep -A2 "PATCH: force native driver path" drivers/net/efi/snpnet.c
-
           make clean
-          make -j"$(nproc)" EMBED=/tmp/imds-boot.ipxe \
+          make -j"$(nproc)" \
+              EMBED=/tmp/imds-boot.ipxe \
+              DEBUG=dhcp,netdevice,arp,virtio-net \
               bin-x86_64-efi/ipxe.efi
-          mkdir -p ../../out/imds-nosnp
-          cp bin-x86_64-efi/ipxe.efi    ../../out/imds-nosnp/ipxe-imds-nosnp.efi
-          cp drivers/net/efi/snpnet.c   ../../out/imds-nosnp/snpnet.c.patched
+          mkdir -p ../../out/imds-debug
+          cp bin-x86_64-efi/ipxe.efi  ../../out/imds-debug/ipxe-imds-debug.efi
+          cp /tmp/imds-boot.ipxe      ../../out/imds-debug/embed.ipxe
 
       - name: artifact info
         run: |
           cd out
-          for f in vanilla/* imds/*; do
+          for f in vanilla/* imds/* imds-debug/*; do
               if [ -f "$f" ]; then
                   size=$(stat -c%s "$f")
                   sha=$(sha256sum "$f" | awk '{print $1}')
-                  printf "%-32s  %10d bytes  %s\n" "$f" "$size" "$sha"
+                  printf "%-44s  %10d bytes  %s\n" "$f" "$size" "$sha"
               fi
           done
 
