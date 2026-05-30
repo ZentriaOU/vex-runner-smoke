@@ -83,41 +83,26 @@ jobs:
           #!ipxe
           set imds-url http://169.254.169.254/latest/ipxe-script
 
-          echo Opening net0 and waiting for link...
-          ifopen net0 || goto noif
-
-          set wait:int8 0
-          :link_wait
-          iseq ${net0/link} 1 && goto link_up
-          sleep 1
-          inc wait
-          iseq ${wait} 15 && goto link_timeout
-          goto link_wait
-
-          :link_up
-          echo Link up after ${wait}s (mac ${net0/mac})
-          set try:int8 0
-          :dhcp_retry
-          echo DHCP attempt ${try}...
+          echo Step-1: pre-DHCP settle
+          sleep 5
+          echo Step-2: DHCP attempt 1
           dhcp net0 && goto have_ip
-          sleep 2
-          inc try
-          iseq ${try} 4 && goto noip
-          goto dhcp_retry
+          echo Step-3: DHCP attempt 2 (after 3s)
+          sleep 3
+          dhcp net0 && goto have_ip
+          echo Step-4: DHCP attempt 3 (after 3s)
+          sleep 3
+          dhcp net0 && goto have_ip
+          echo Step-5: DHCP attempt 4 (after 5s)
+          sleep 5
+          dhcp net0 && goto have_ip
+          echo DHCP failed after 4 attempts; dropping to shell.
+          shell
 
           :have_ip
           echo Got IP ${net0/ip} via ${net0/dhcp-server}
           chain --replace --autofree ${imds-url} || goto fail
 
-          :noif
-          echo No net0 interface available
-          shell
-          :link_timeout
-          echo net0 link never came up after 15s
-          shell
-          :noip
-          echo DHCP failed after retries
-          shell
           :fail
           echo IMDS chain-load failed
           shell
