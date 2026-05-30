@@ -1,0 +1,98 @@
+name: smoke
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  dump:
+    runs-on: [self-hosted, vex, linux, x64]
+    timeout-minutes: 10
+    steps:
+      - name: identity
+        run: |
+          echo "::group::hostname / uname"
+          hostname
+          uname -a
+          echo "::endgroup::"
+
+          echo "::group::os-release"
+          cat /etc/os-release
+          echo "::endgroup::"
+
+          echo "::group::user"
+          whoami
+          id
+          echo "::endgroup::"
+
+      - name: cpu + memory
+        run: |
+          echo "::group::nproc / cpu model"
+          nproc
+          grep -m1 "model name" /proc/cpuinfo
+          echo "::endgroup::"
+
+          echo "::group::memory"
+          free -h
+          echo "::endgroup::"
+
+          echo "::group::disk"
+          df -h /
+          mount | grep -E "vroot|virtiofs" || true
+          echo "::endgroup::"
+
+      - name: network
+        run: |
+          echo "::group::interfaces"
+          ip -br a
+          echo "::endgroup::"
+
+          echo "::group::routes"
+          ip route
+          echo "::endgroup::"
+
+          echo "::group::dns"
+          cat /etc/resolv.conf
+          echo "::endgroup::"
+
+          echo "::group::outbound ip via httpbin"
+          curl -sS --max-time 10 https://httpbin.io/ip || echo "(httpbin failed)"
+          echo
+          echo "::endgroup::"
+
+          echo "::group::outbound ip via ifconfig.co"
+          curl -sS --max-time 10 https://ifconfig.co || echo "(ifconfig.co failed)"
+          echo
+          echo "::endgroup::"
+
+      - name: latency probes
+        run: |
+          for h in 1.1.1.1 neti.ee 3nv.io github.com; do
+            echo "::group::ping $h"
+            ping -c 3 -W 2 "$h" 2>&1 | tail -4 || echo "(ping $h failed)"
+            echo "::endgroup::"
+          done
+
+      - name: environment
+        run: |
+          echo "::group::env (sorted, secrets redacted by Actions)"
+          env | sort
+          echo "::endgroup::"
+
+      - name: vex metadata service
+        run: |
+          echo "::group::IMDS instance-id"
+          curl -sS --max-time 5 http://169.254.169.254/latest/meta-data/instance-id || echo "(failed)"
+          echo
+          echo "::endgroup::"
+
+          echo "::group::IMDS hostname"
+          curl -sS --max-time 5 http://169.254.169.254/latest/meta-data/hostname || echo "(failed)"
+          echo
+          echo "::endgroup::"
+
+          echo "::group::IMDS runner-installation"
+          curl -sS --max-time 5 http://169.254.169.254/latest/runner-installation || echo "(failed)"
+          echo
+          echo "::endgroup::"
