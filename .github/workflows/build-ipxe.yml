@@ -39,6 +39,21 @@ jobs:
           cd ipxe
           echo "head: $(git rev-parse HEAD)"
 
+      - name: enable extra iPXE commands (SLEEP, NSLOOKUP, TIME)
+        run: |
+          # iPXE's default config/general.h leaves SLEEP_CMD commented out;
+          # the embedded boot script uses `sleep` for link-wait + DHCP retry
+          # backoff. Without this, the script terminates on the first `sleep`
+          # call with "unknown command" and iPXE returns to firmware with a
+          # non-zero EFI status (which OVMF reports as "Buffer Too Small").
+          # Per-build overrides go in config/local/general.h.
+          cat > ipxe/src/config/local/general.h <<'EOF'
+          #define SLEEP_CMD
+          #define NSLOOKUP_CMD
+          #define TIME_CMD
+          EOF
+          cat ipxe/src/config/local/general.h
+
       - name: build vanilla (EFI + BIOS + lkrn targets)
         run: |
           cd ipxe/src
