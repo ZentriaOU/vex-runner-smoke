@@ -55,22 +55,23 @@ jobs:
           cd edk2
           make -C BaseTools -j"$(nproc)"
 
-      - name: build OvmfPkg/CloudHv (X64, $BUILD_TARGET, GCC5)
+      - name: build OvmfPkg/CloudHv (X64, $BUILD_TARGET, GCC)
         run: |
           cd edk2
           export WORKSPACE="$(pwd)"
           export PACKAGES_PATH="$WORKSPACE"
           # shellcheck source=/dev/null
           . ./edksetup.sh
+          # edk2 master renamed the GCC5 toolchain to plain GCC ~2023.
           build \
               -p OvmfPkg/CloudHv/CloudHvX64.dsc \
-              -t GCC5 \
+              -t GCC \
               -a X64 \
               -b "$BUILD_TARGET" \
               -n "$(nproc)"
 
-          # Output path is Build/CloudHvX64/{TARGET}_GCC5/FV/CLOUDHV.fd
-          OUT="Build/CloudHvX64/${BUILD_TARGET}_GCC5/FV/CLOUDHV.fd"
+          # Output path is Build/CloudHvX64/{TARGET}_GCC/FV/CLOUDHV.fd
+          OUT="Build/CloudHvX64/${BUILD_TARGET}_GCC/FV/CLOUDHV.fd"
           ls -la "$OUT"
           mkdir -p ../out
           cp "$OUT" "../out/CLOUDHV.fd"
