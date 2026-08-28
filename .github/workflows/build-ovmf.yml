@@ -15,7 +15,7 @@ on:
 
 jobs:
   build:
-    runs-on: [self-hosted, vex, linux, x64]
+    runs-on: [self-hosted, nordrun]
     timeout-minutes: 45
     env:
       DEBIAN_FRONTEND: noninteractive

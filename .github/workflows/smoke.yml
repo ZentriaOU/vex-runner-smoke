@@ -5,7 +5,7 @@ on:
 
 jobs:
   dump:
-    runs-on: [self-hosted, vex, linux, x64]
+    runs-on: [self-hosted, nordrun]
     timeout-minutes: 10
     steps:
       - name: identity
@@ -78,19 +78,30 @@ jobs:
           env | sort
           echo "::endgroup::"
 
-      - name: vex metadata service
+      - name: warren metadata service
+        # NOTE: never dump user-data here — the platform embeds the VM login
+        # password in it, and this repo's job logs are public.
         run: |
           echo "::group::IMDS instance-id"
-          curl -sS --max-time 5 http://169.254.169.254/latest/meta-data/instance-id || echo "(failed)"
+          curl -sS --max-time 5 http://169.254.169.254/2009-04-04/meta-data/instance-id || echo "(failed)"
           echo
           echo "::endgroup::"
 
           echo "::group::IMDS hostname"
-          curl -sS --max-time 5 http://169.254.169.254/latest/meta-data/hostname || echo "(failed)"
+          curl -sS --max-time 5 http://169.254.169.254/2009-04-04/meta-data/hostname || echo "(failed)"
           echo
           echo "::endgroup::"
 
-          echo "::group::IMDS runner-installation"
-          curl -sS --max-time 5 http://169.254.169.254/latest/runner-installation || echo "(failed)"
-          echo
-          echo "::endgroup::"
+      - name: docker
+        run: |
+          docker run --rm alpine:latest sh -c 'echo "docker works: $(uname -r)"'
+
+  sized:
+    runs-on: [self-hosted, nordrun-4x8]
+    timeout-minutes: 10
+    steps:
+      - name: flavor check
+        run: |
+          echo "vcpus: $(nproc) (expect 4)"
+          echo "mem: $(free -h | awk '/Mem/{print $2}') (expect ~8G)"
+          hostname
