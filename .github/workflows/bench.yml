@@ -1,0 +1,64 @@
+name: bench
+
+on:
+  workflow_dispatch:
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: nordrun
+            labels: [self-hosted, nordrun]
+          - runner: github-hosted
+            labels: ubuntu-latest
+    runs-on: ${{ matrix.labels }}
+    timeout-minutes: 15
+    steps:
+      - name: identity
+        run: |
+          echo "::group::host"
+          echo "runner target: ${{ matrix.runner }}"
+          hostname
+          grep -m1 "model name" /proc/cpuinfo
+          echo "vCPUs: $(nproc)"
+          free -h | awk '/Mem/{print "RAM: "$2}'
+          echo "::endgroup::"
+
+      - name: install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sysbench fio >/dev/null
+
+      - name: cpu single-thread
+        run: |
+          sysbench cpu --cpu-max-prime=20000 --threads=1 --time=15 run \
+            | awk '/events per second/{print "CPU 1-thread events/s: "$4}'
+
+      - name: cpu all-threads
+        run: |
+          sysbench cpu --cpu-max-prime=20000 --threads=$(nproc) --time=15 run \
+            | awk '/events per second/{print "CPU '"$(nproc)"'-thread events/s: "$4}'
+
+      - name: memory bandwidth
+        run: |
+          sysbench memory --memory-block-size=1M --memory-total-size=20G --threads=$(nproc) run \
+            | awk '/transferred/{print "MEM: "$0}'
+
+      - name: disk random write IOPS
+        run: |
+          fio --name=w --ioengine=libaio --direct=1 --rw=randwrite --bs=4k \
+              --size=512M --numjobs=1 --runtime=15 --time_based --group_reporting 2>/dev/null \
+            | awk -F'[=,]' '/write: IOPS/{print "DISK randwrite "$1$2}'
+
+      - name: disk sequential write
+        run: |
+          dd if=/dev/zero of=seqtest bs=1M count=2048 conv=fdatasync 2>&1 | tail -1
+          rm -f seqtest
+
+      - name: git clone throughput
+        run: |
+          /usr/bin/time -v git clone --depth 1 https://github.com/git/git bench-git 2>&1 \
+            | awk '/Elapsed/{print "git clone (depth1) wall: "$8}'
+          rm -rf bench-git
