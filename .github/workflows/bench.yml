@@ -9,8 +9,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: nordrun
-            labels: [self-hosted, nordrun]
+          - runner: nordrun-4x16
+            labels: [self-hosted, nordrun-4x16]
           - runner: github-hosted
             labels: ubuntu-latest
     runs-on: ${{ matrix.labels }}
